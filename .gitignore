@@ -87,3 +87,6 @@ Dockerfile*
 *.tmp
 *.swp
 *.swo
+
+# fid/results
+fid/results/*
