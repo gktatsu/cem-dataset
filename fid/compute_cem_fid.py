@@ -474,6 +474,15 @@ def parse_args() -> argparse.Namespace:
         help="Where to save the measurement summary",
     )
     parser.add_argument(
+        "--data-volume",
+        type=str,
+        default=None,
+        help=(
+            "Optional host:container volume mapping string to record "
+            "in the summary"
+        ),
+    )
+    parser.add_argument(
         "--compute-kid",
         action="store_true",
         help="Also compute Kernel Inception Distance",
@@ -566,7 +575,12 @@ def main() -> None:
         "normalization_mean": mean,
         "normalization_std": std,
         "timestamp_utc": now_utc.isoformat(),
+        "real_dir": str(args.real_dir.resolve()),
+        "gen_dir": str(args.gen_dir.resolve()),
     }
+
+    if args.data_volume:
+        result["data_volume"] = args.data_volume
 
     if args.compute_kid:
         if real_stats.features is None or gen_stats.features is None:
