@@ -27,7 +27,7 @@ python fid/compute_cem_fid.py REAL_DIR GEN_DIR [オプション]
 - `REAL_DIR`: 実写 EM 画像が入ったフォルダへのパス
 - `GEN_DIR` : 生成 EM 画像が入ったフォルダへのパス
 
-計算後、FID がコンソールに表示され、同じ内容が JSON ファイルとして保存されます (既定は `cem_fid.json`)。
+計算後、FID がコンソールに表示され、同じ内容が JSON ファイルとして保存されます。出力ファイル名には `YYYYMMDD_HHMM` 形式のタイムスタンプが自動付与され、既定設定では `cem_fid_20250315_0130.json` のような名称になります。
 
 ## 主なオプション
 | オプション | 既定値 | 説明 |
@@ -40,6 +40,7 @@ python fid/compute_cem_fid.py REAL_DIR GEN_DIR [オプション]
 | `--weights-path PATH` | なし | Zenodo から手動でダウンロードしたチェックポイントを指定します。 |
 | `--download-dir PATH` | なし | 重みファイルのキャッシュ先ディレクトリ。既定では `TORCH_HOME` を利用します。 |
 | `--output-json PATH` | `cem_fid.json` | 結果を書き出す JSON ファイルパス。既存ファイルは上書きされます。 |
+| `--data-volume STR` | なし | ホストとコンテナのマウント情報など、実行環境メモを JSON に残したい場合に指定します。 |
 | `--compute-kid` | 無効 | 指定すると KID も計算します (小規模データセットで有用)。 |
 | `--kid-subset-size INT` | `1000` | KID 推定で使用するサブセットのサンプル数。 |
 | `--kid-subset-count INT` | `100` | KID 推定でサンプリングするサブセットの回数。 |
@@ -47,7 +48,7 @@ python fid/compute_cem_fid.py REAL_DIR GEN_DIR [オプション]
 
 ## 出力
 - **コンソール**: FID (および KID を有効化した場合は平均と標準誤差) を整形表示します。
-- **JSON**: 指定した `--output-json` に、FID/KID の値、使用したバックボーン、画像枚数、正規化パラメータなどのメタデータを保存します。
+- **JSON**: 指定した `--output-json` に、FID/KID の値、使用したバックボーン、画像枚数、正規化パラメータ、UTC タイムスタンプ、実/生成画像ディレクトリの絶対パス、`--data-volume` を指定した場合はその文字列を保存します。
 
 ## 前処理と特徴抽出の流れ
 1. 画像を読み込み、3 チャンネルの RGB へ変換。
@@ -70,3 +71,20 @@ python fid/compute_cem_fid.py REAL_DIR GEN_DIR [オプション]
 
 ## 参考
 スクリプト本体は `fid/compute_cem_fid.py` にあります。詳細なコマンドライン仕様や実装内容についてはソースコードを参照してください。
+
+### Docker 利用例
+
+```bash
+sudo docker run --rm \
+  -v /path/to/real_and_fake:/data \
+  -v /path/to/weights:/weights \
+  -v /path/to/save/results:/results \
+  cem-fid \
+  /data/real /data/gen \
+  --backbone cem500k \
+  --weights-path /weights/cem500k_mocov2_resnet50_200ep.pth.tar \
+  --output-json /results/cem_fid.json \
+  --data-volume /path/to/real_and_fake:/data
+```
+
+結果 JSON にはタイムスタンプ付きファイル名、実行時刻、入力ディレクトリ、`--data-volume` で渡した文字列が記録されるため、評価条件のログとして利用できます。
