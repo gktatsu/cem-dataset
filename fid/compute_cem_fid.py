@@ -70,6 +70,15 @@ def load_python_module(name: str, path: Path):
     return module
 
 
+def find_repo_root(script_path: Path) -> Path:
+    """pretraining ディレクトリを含むリポジトリルートを探索する."""
+
+    for candidate in [script_path.parent, *script_path.parents]:
+        if (candidate / "pretraining").is_dir():
+            return candidate
+    return script_path.parent
+
+
 def get_mocov2_resnet50_class(repo_dir: Path):
     module = load_python_module(
         "cem_mocov2_resnet", repo_dir / "pretraining" / "mocov2" / "resnet.py"
@@ -171,18 +180,27 @@ def extract_mocov2_backbone(
 ) -> Dict[str, torch.Tensor]:
     """Strip MoCo encoder prefixes and keep backbone parameters only."""
 
-    backbone: Dict[str, torch.Tensor] = {}
-    prefix = "module.encoder_q."
-    for key, value in state_dict.items():
-        if not key.startswith(prefix):
-            continue
-        if key.startswith(prefix + "fc"):
-            continue
-        new_key = key[len(prefix):]
-        backbone[new_key] = value
-    if not backbone:
-        raise RuntimeError("No encoder_q weights found in checkpoint")
-    return backbone
+    prefixes = [
+        "module.encoder_q.",
+        "encoder_q.",
+        "module.encoder.",
+        "encoder.",
+        "",
+    ]
+
+    for prefix in prefixes:
+        backbone: Dict[str, torch.Tensor] = {}
+        for key, value in state_dict.items():
+            if not key.startswith(prefix):
+                continue
+            if key.startswith(prefix + "fc"):
+                continue
+            new_key = key[len(prefix):]
+            backbone[new_key] = value
+        if backbone:
+            return backbone
+
+    raise RuntimeError("No encoder_q weights found in checkpoint")
 
 
 def extract_swav_backbone(
@@ -190,20 +208,23 @@ def extract_swav_backbone(
 ) -> Dict[str, torch.Tensor]:
     """Strip DDP prefixes and remove projection/prototype layers."""
 
-    backbone: Dict[str, torch.Tensor] = {}
-    prefix = "module."
-    for key, value in state_dict.items():
-        if not key.startswith(prefix):
-            continue
-        clean = key[len(prefix):]
-        if clean.startswith("projection_head"):
-            continue
-        if clean.startswith("prototypes"):
-            continue
-        backbone[clean] = value
-    if not backbone:
-        raise RuntimeError("No backbone weights found in checkpoint")
-    return backbone
+    prefixes = ["module.", ""]
+
+    for prefix in prefixes:
+        backbone: Dict[str, torch.Tensor] = {}
+        for key, value in state_dict.items():
+            if not key.startswith(prefix):
+                continue
+            clean = key[len(prefix):]
+            if clean.startswith("projection_head"):
+                continue
+            if clean.startswith("prototypes"):
+                continue
+            backbone[clean] = value
+        if backbone:
+            return backbone
+
+    raise RuntimeError("No backbone weights found in checkpoint")
 
 
 class CEMFeatureExtractor(nn.Module):
@@ -238,7 +259,7 @@ class CEMFeatureExtractor(nn.Module):
 
 def instantiate_backbone(
     variant: str,
-    repo_dir: Path,
+    repo_root: Path,
     weights_path: Optional[Path],
     download_dir: Optional[Path],
 ) -> Tuple[CEMFeatureExtractor, float, float, str]:
@@ -255,12 +276,12 @@ def instantiate_backbone(
     std = float(norms[1]) if norms is not None else float(conf["std"])
 
     if conf["pretraining"] == "mocov2":
-        resnet50 = get_mocov2_resnet50_class(repo_dir)
+        resnet50 = get_mocov2_resnet50_class(repo_root)
         backbone_model = resnet50(in_channels=1)
         backbone_model.fc = nn.Identity()
         backbone_weights = extract_mocov2_backbone(state_dict)
     else:
-        resnet50 = get_swav_resnet50_class(repo_dir)
+        resnet50 = get_swav_resnet50_class(repo_root)
         backbone_model = resnet50(
             normalize=False,
             output_dim=0,
@@ -479,12 +500,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    repo_dir = Path(__file__).resolve().parent
+    script_path = Path(__file__).resolve()
+    repo_root = find_repo_root(script_path)
     device = torch.device(args.device)
 
     model, mean, std, weight_source = instantiate_backbone(
         variant=args.backbone,
-        repo_dir=repo_dir,
+        repo_root=repo_root,
         weights_path=args.weights_path,
         download_dir=args.download_dir,
     )
