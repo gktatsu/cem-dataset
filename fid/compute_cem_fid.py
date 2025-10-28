@@ -8,6 +8,7 @@ import importlib.util
 import json
 import math
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -552,6 +553,9 @@ def main() -> None:
         gen_stats.cov,
     )
 
+    now_utc = datetime.now(timezone.utc)
+    timestamp_suffix = now_utc.strftime("%Y%m%d_%H%M")
+
     result = {
         "fid": fid_value,
         "backbone": args.backbone,
@@ -561,6 +565,7 @@ def main() -> None:
         "image_size": args.image_size,
         "normalization_mean": mean,
         "normalization_std": std,
+        "timestamp_utc": now_utc.isoformat(),
     }
 
     if args.compute_kid:
@@ -576,7 +581,17 @@ def main() -> None:
         result["kid"] = kid_mean
         result["kid_std"] = kid_std
 
-    args.output_json.write_text(json.dumps(result, indent=2))
+    output_path = args.output_json
+    if output_path.suffix:
+        output_path = output_path.with_name(
+            f"{output_path.stem}_{timestamp_suffix}{output_path.suffix}"
+        )
+    else:
+        output_path = output_path.with_name(
+            f"{output_path.name}_{timestamp_suffix}"
+        )
+
+    output_path.write_text(json.dumps(result, indent=2))
 
     print("=== CEM FID Results ===")
     print(f"Backbone       : {args.backbone}")
@@ -587,7 +602,7 @@ def main() -> None:
     if args.compute_kid:
         print(f"KID (mean)     : {kid_mean:.6f}")
         print(f"KID (std/sqrt(n)) : {kid_std:.6f}")
-    print(f"Saved summary  : {args.output_json}")
+    print(f"Saved summary  : {output_path}")
     print("Download weights manually if needed:")
     print(MODEL_CONFIGS[args.backbone]["url"])
 
