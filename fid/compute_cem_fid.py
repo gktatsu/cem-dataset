@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compute Frechet Inception Distance (FID) with CEM pretrained ResNet50."""
+"""CEMで事前学習したResNet50を用いてFIDとKIDを計算するスクリプト."""
 
 from __future__ import annotations
 
@@ -55,13 +55,32 @@ IMAGE_EXTENSIONS: Tuple[str, ...] = (
 
 @dataclass
 class FeatureStats:
+    """特徴統計量を保持するコンテナ.
+
+    Attributes:
+        mean (np.ndarray): 特徴ベクトルの平均値.
+        cov (np.ndarray): 特徴ベクトルの共分散行列.
+        features (Optional[np.ndarray]): 必要に応じて保存された全特徴行列.
+    """
+
     mean: np.ndarray
     cov: np.ndarray
     features: Optional[np.ndarray]
 
 
 def load_python_module(name: str, path: Path):
-    """Load a Python module from a file path."""
+    """指定したファイルからPythonモジュールを動的に読み込む.
+
+    Args:
+        name (str): 読み込み後に利用するモジュール名.
+        path (Path): 読み込み対象となるPythonファイルのパス.
+
+    Returns:
+        ModuleType: 読み込まれたモジュールオブジェクト.
+
+    Raises:
+        ImportError: モジュール仕様の取得または読み込みに失敗した場合.
+    """
 
     spec = importlib.util.spec_from_file_location(name, str(path))
     if spec is None or spec.loader is None:
@@ -72,7 +91,14 @@ def load_python_module(name: str, path: Path):
 
 
 def find_repo_root(script_path: Path) -> Path:
-    """pretraining ディレクトリを含むリポジトリルートを探索する."""
+    """pretrainingディレクトリを手掛かりにリポジトリルートを探索する.
+
+    Args:
+        script_path (Path): 実行中スクリプトの絶対パス.
+
+    Returns:
+        Path: pretrainingディレクトリを含む最上位ディレクトリ.
+    """
 
     for candidate in [script_path.parent, *script_path.parents]:
         if (candidate / "pretraining").is_dir():
@@ -81,6 +107,15 @@ def find_repo_root(script_path: Path) -> Path:
 
 
 def get_mocov2_resnet50_class(repo_dir: Path):
+    """MoCo v2版ResNet50クラスをリポジトリ内から読み込む.
+
+    Args:
+        repo_dir (Path): リポジトリのルートディレクトリ.
+
+    Returns:
+        Callable[..., nn.Module]: ResNet50を生成するコンストラクタ.
+    """
+
     module = load_python_module(
         "cem_mocov2_resnet", repo_dir / "pretraining" / "mocov2" / "resnet.py"
     )
@@ -88,6 +123,15 @@ def get_mocov2_resnet50_class(repo_dir: Path):
 
 
 def get_swav_resnet50_class(repo_dir: Path):
+    """SwAV版ResNet50クラスをリポジトリ内から読み込む.
+
+    Args:
+        repo_dir (Path): リポジトリのルートディレクトリ.
+
+    Returns:
+        Callable[..., nn.Module]: ResNet50を生成するコンストラクタ.
+    """
+
     module = load_python_module(
         "cem_swav_resnet",
         repo_dir / "pretraining" / "swav" / "models" / "resnet.py",
@@ -96,7 +140,18 @@ def get_swav_resnet50_class(repo_dir: Path):
 
 
 def collect_image_paths(directory: Path) -> List[Path]:
-    """List image file paths sorted lexicographically."""
+    """指定ディレクトリ以下の画像ファイルパスを辞書順に収集する.
+
+    Args:
+        directory (Path): 画像を探索するルートディレクトリ.
+
+    Returns:
+        List[Path]: 見つかった画像ファイルのパス一覧.
+
+    Raises:
+        FileNotFoundError: 指定ディレクトリが存在しない場合.
+        RuntimeError: 対応する画像ファイルが1枚も見つからない場合.
+    """
 
     if not directory.is_dir():
         raise FileNotFoundError(f"Directory not found: {directory}")
@@ -112,16 +167,32 @@ def collect_image_paths(directory: Path) -> List[Path]:
 
 
 class ImageFolderDataset(Dataset):
-    """Minimal dataset that keeps image loading and transforms together."""
+    """ディスク上の画像群を一括読み込みする軽量データセット.
+
+    Attributes:
+        paths (List[Path]): 利用する画像パスのリスト.
+        transform (transforms.Compose): 画像読み込み時に適用する前処理.
+    """
 
     def __init__(self, paths: Sequence[Path], transform: transforms.Compose):
         self.paths = list(paths)
         self.transform = transform
 
     def __len__(self) -> int:
+        """データセット内の画像枚数を返す."""
+
         return len(self.paths)
 
     def __getitem__(self, index: int) -> torch.Tensor:
+        """指定インデックスの画像を読み込み前処理したテンソルを返す.
+
+        Args:
+            index (int): 取得する画像のインデックス.
+
+        Returns:
+            torch.Tensor: 正規化済みの画像テンソル.
+        """
+
         path = self.paths[index]
         with Image.open(path) as img:
             image = img.convert("RGB")
@@ -133,7 +204,16 @@ def build_transform(
     std: float,
     image_size: int,
 ) -> transforms.Compose:
-    """Create the deterministic preprocessing pipeline used during training."""
+    """学習時と同じ決定的な前処理パイプラインを構築する.
+
+    Args:
+        mean (float): グレースケール正規化の平均値.
+        std (float): グレースケール正規化の標準偏差.
+        image_size (int): リサイズ後の一辺の長さ.
+
+    Returns:
+        transforms.Compose: 連続適用される画像前処理.
+    """
 
     return transforms.Compose(
         [
@@ -154,7 +234,20 @@ def load_checkpoint(
     download_dir: Optional[Path] = None,
     local_path: Optional[Path] = None,
 ) -> Dict[str, torch.Tensor]:
-    """Download (if needed) and load a checkpoint."""
+    """事前学習済み重みを取得しチェックポイントを読み込む.
+
+    Args:
+        url (str): 重みファイルを取得するURL.
+        download_dir (Optional[Path]): ダウンロードキャッシュ先のディレクトリ.
+        local_path (Optional[Path]): 既存のローカル重みファイルのパス.
+
+    Returns:
+        Dict[str, torch.Tensor]: 読み込まれたチェックポイントの状態辞書.
+
+    Raises:
+        FileNotFoundError: 指定したローカルファイルが存在しない場合.
+        RuntimeError: ダウンロードに失敗した場合.
+    """
 
     if local_path is not None:
         if not local_path.is_file():
@@ -179,7 +272,17 @@ def load_checkpoint(
 def extract_mocov2_backbone(
     state_dict: Dict[str, torch.Tensor]
 ) -> Dict[str, torch.Tensor]:
-    """Strip MoCo encoder prefixes and keep backbone parameters only."""
+    """MoCo v2のエンコーダ重みからバックボーン部分のみを抽出する.
+
+    Args:
+        state_dict (Dict[str, torch.Tensor]): MoCo v2のチェックポイントstate_dict.
+
+    Returns:
+        Dict[str, torch.Tensor]: バックボーンに対応するパラメータのみを含む辞書.
+
+    Raises:
+        RuntimeError: エンコーダの重みが見つからない場合.
+    """
 
     prefixes = [
         "module.encoder_q.",
@@ -207,7 +310,17 @@ def extract_mocov2_backbone(
 def extract_swav_backbone(
     state_dict: Dict[str, torch.Tensor]
 ) -> Dict[str, torch.Tensor]:
-    """Strip DDP prefixes and remove projection/prototype layers."""
+    """SwAVのチェックポイントからバックボーン重みを抽出する.
+
+    Args:
+        state_dict (Dict[str, torch.Tensor]): SwAVのチェックポイントstate_dict.
+
+    Returns:
+        Dict[str, torch.Tensor]: バックボーン層のみを保持したstate_dict.
+
+    Raises:
+        RuntimeError: バックボーン重みが見つからない場合.
+    """
 
     prefixes = ["module.", ""]
 
@@ -229,7 +342,7 @@ def extract_swav_backbone(
 
 
 class CEMFeatureExtractor(nn.Module):
-    """Wrap CEM backbones so the forward pass returns pooled features."""
+    """CEMバックボーンを包み込み特徴ベクトルを直接返すユーティリティ."""
 
     def __init__(self, backbone: nn.Module, variant: str):
         super().__init__()
@@ -237,6 +350,15 @@ class CEMFeatureExtractor(nn.Module):
         self.variant = variant
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """特徴抽出の前向き計算を実行する.
+
+        Args:
+            x (torch.Tensor): 前処理済み入力画像のバッチ.
+
+        Returns:
+            torch.Tensor: プーリング後の特徴ベクトル.
+        """
+
         if self.variant == "cem500k":
             model = self.backbone
             x = model.conv1(x)
@@ -264,6 +386,22 @@ def instantiate_backbone(
     weights_path: Optional[Path],
     download_dir: Optional[Path],
 ) -> Tuple[CEMFeatureExtractor, float, float, str]:
+    """指定バリアントのCEMバックボーンを初期化する.
+
+    Args:
+        variant (str): 使用するバックボーンの識別子.
+        repo_root (Path): リポジトリルートへのパス.
+        weights_path (Optional[Path]): ローカルに保存された重みのパス.
+        download_dir (Optional[Path]): 重みをダウンロードする場合の保存先.
+
+    Returns:
+        Tuple[CEMFeatureExtractor, float, float, str]: 特徴抽出器、正規化平均、標準偏差、
+            重み取得元をまとめたタプル.
+
+    Raises:
+        RuntimeError: 重みの読み込みに不整合がある場合.
+    """
+
     conf = MODEL_CONFIGS[variant]
     checkpoint = load_checkpoint(
         url=conf["url"],
@@ -319,7 +457,18 @@ def compute_feature_stats(
     store: bool,
     desc: str,
 ) -> FeatureStats:
-    """Run images through the model and gather statistics."""
+    """モデルで特徴を計算し平均と共分散を推定する.
+
+    Args:
+        model (nn.Module): 特徴抽出に使用するモデル.
+        dataloader (DataLoader): 入力画像を供給するデータローダー.
+        device (torch.device): 推論を実行するデバイス.
+        store (bool): KID計算向けに全特徴を保存するかどうか.
+        desc (str): tqdmに表示する進捗メッセージ.
+
+    Returns:
+        FeatureStats: 計算済みの統計量と必要に応じて特徴行列.
+    """
 
     features_list: List[np.ndarray] = []
     with torch.no_grad():
@@ -345,7 +494,17 @@ def compute_fid(
     mu2: np.ndarray,
     sigma2: np.ndarray,
 ) -> float:
-    """Calculate the Frechet distance between two Gaussian distributions."""
+    """2つのガウス分布間のFréchet距離(FID)を計算する.
+
+    Args:
+        mu1 (np.ndarray): 実画像側の特徴平均ベクトル.
+        sigma1 (np.ndarray): 実画像側の特徴共分散行列.
+        mu2 (np.ndarray): 生成画像側の特徴平均ベクトル.
+        sigma2 (np.ndarray): 生成画像側の特徴共分散行列.
+
+    Returns:
+        float: 算出されたFID値.
+    """
 
     diff = mu1 - mu2
     covmean, _ = linalg.sqrtm(sigma1 @ sigma2, disp=False)
@@ -362,7 +521,16 @@ def polynomial_kernel(
     y: np.ndarray,
     degree: int = 3,
 ) -> np.ndarray:
-    """Third-order polynomial kernel used in KID."""
+    """KID計算で用いる3次の多項式カーネルを評価する.
+
+    Args:
+        x (np.ndarray): 1組目の特徴ベクトル群.
+        y (np.ndarray): 2組目の特徴ベクトル群.
+        degree (int): 多項式カーネルの次数.
+
+    Returns:
+        np.ndarray: カーネル行列.
+    """
 
     gamma = 1.0 / x.shape[1]
     return (gamma * x @ y.T + 1.0) ** degree
@@ -375,7 +543,21 @@ def multi_subset_kid(
     n_subsets: int,
     seed: int,
 ) -> Tuple[float, float]:
-    """Unbiased Kernel Inception Distance over multiple subsets."""
+    """複数サブセットで評価するKIDの不偏推定量を計算する.
+
+    Args:
+        real (np.ndarray): 実画像から得た特徴行列.
+        fake (np.ndarray): 生成画像から得た特徴行列.
+        subset_size (int): 各サブセットに抽出するサンプル数.
+        n_subsets (int): サブセットの繰り返し回数.
+        seed (int): 乱数シード値.
+
+    Returns:
+        Tuple[float, float]: KIDの平均値と標準誤差.
+
+    Raises:
+        RuntimeError: 十分なサンプルがなくKIDを計算できない場合.
+    """
 
     if real.shape[0] < subset_size or fake.shape[0] < subset_size:
         subset_size = min(real.shape[0], fake.shape[0])
@@ -411,6 +593,12 @@ def multi_subset_kid(
 
 
 def parse_args() -> argparse.Namespace:
+    """コマンドライン引数を解析し名前空間として返す.
+
+    Returns:
+        argparse.Namespace: 解析済み引数を格納した名前空間.
+    """
+
     parser = argparse.ArgumentParser(
         description=(
             "Compute FID (and optionally KID) using CEM pretrained ResNet50"
@@ -509,6 +697,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """スクリプトのエントリーポイント."""
+
     args = parse_args()
     script_path = Path(__file__).resolve()
     repo_root = find_repo_root(script_path)
