@@ -90,3 +90,6 @@ Dockerfile*
 
 # fid/results
 fid/results/*
+
+# Enroot
+*.sqsh
