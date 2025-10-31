@@ -14,4 +14,5 @@ RUN pip install --no-cache-dir torch torchvision --index-url https://download.py
 COPY . /app
 
 ENTRYPOINT ["python", "fid/compute_cem_fid.py"]
+# ENTRYPOINT ["python", "fid/compute_normal_fid.py"]
 CMD ["--help"]
