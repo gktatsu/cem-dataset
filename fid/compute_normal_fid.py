@@ -98,11 +98,14 @@ def instantiate_inception_v3() -> Tuple[nn.Module, Sequence[float], Sequence[flo
 	"""Load an ImageNet pretrained Inception v3 backbone for feature extraction."""
 
 	weights = Inception_V3_Weights.IMAGENET1K_V1
-	model = inception_v3(weights=weights, aux_logits=False, transform_input=False)
+	model = inception_v3(weights=weights, transform_input=False)
 	model.fc = nn.Identity()
+	if hasattr(model, "aux_logits"):
+		model.aux_logits = False
 	model.eval()
-	mean = list(weights.meta["mean"])
-	std = list(weights.meta["std"])
+	meta = getattr(weights, "meta", {}) or {}
+	mean = list(meta.get("mean", (0.485, 0.456, 0.406)))
+	std = list(meta.get("std", (0.229, 0.224, 0.225)))
 	source = "torchvision.models.inception_v3(IMAGENET1K_V1)"
 	return model, mean, std, source
 
