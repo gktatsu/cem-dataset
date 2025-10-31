@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: MIT
 #!/usr/bin/env python3
-"""Compute standard FID/KID scores using an ImageNet Inception v3 backbone."""
+"""ImageNet学習済みInception v3を用いてFID/KIDを算出するユーティリティ。
+
+このモジュールは実画像群と生成画像群の特徴統計量を比較し、Fréchet
+Inception Distance (FID) と Kernel Inception Distance (KID) を測定するための
+コマンドラインインターフェースを提供する。
+"""
 
 from __future__ import annotations
 
@@ -35,7 +40,13 @@ IMAGE_EXTENSIONS: Tuple[str, ...] = (
 
 @dataclass
 class FeatureStats:
-	"""Container object that keeps feature statistics for later reuse."""
+	"""特徴統計量を保持し再利用できるようにするデータコンテナ。
+
+	Attributes:
+		mean (np.ndarray): 特徴ベクトルの平均。
+		cov (np.ndarray): 特徴ベクトルの分散共分散行列。
+		features (Optional[np.ndarray]): 必要に応じて保存された生の特徴行列。
+	"""
 
 	mean: np.ndarray
 	cov: np.ndarray
@@ -43,7 +54,18 @@ class FeatureStats:
 
 
 def collect_image_paths(directory: Path) -> List[Path]:
-	"""Walk a directory tree and collect all supported image files."""
+	"""サポート対象画像を再帰的に探索してパス一覧を取得する。
+
+	Args:
+		directory (Path): 画像を探索するルートディレクトリ。
+
+	Returns:
+		List[Path]: ソート済みの画像ファイルパス一覧。
+
+	Raises:
+		FileNotFoundError: 指定ディレクトリが存在しない場合。
+		RuntimeError: 画像ファイルが1枚も見つからない場合。
+	"""
 
 	if not directory.is_dir():
 		raise FileNotFoundError(f"Directory not found: {directory}")
@@ -59,7 +81,12 @@ def collect_image_paths(directory: Path) -> List[Path]:
 
 
 class ImageFolderDataset(Dataset):
-	"""Dataset that reads images from disk and applies a deterministic transform."""
+	"""ディスク上の画像を読み込み決定的な前処理を施すデータセット。
+
+	Args:
+		paths (Sequence[Path]): 読み込む画像ファイルのパス列。
+		transform (transforms.Compose): 画像に適用する前処理パイプライン。
+	"""
 
 	def __init__(self, paths: Sequence[Path], transform: transforms.Compose):
 		self.paths = list(paths)
@@ -80,7 +107,16 @@ def build_transform(
 	std: Sequence[float],
 	image_size: int,
 ) -> transforms.Compose:
-	"""Assemble the preprocessing pipeline expected by torchvision Inception v3."""
+	"""Inception v3で期待される前処理パイプラインを構築する。
+
+	Args:
+		mean (Sequence[float]): 正規化時に使用するチャネルごとの平均。
+		std (Sequence[float]): 正規化時に使用するチャネルごとの標準偏差。
+		image_size (int): リサイズ後の正方形画像サイズ。
+
+	Returns:
+		transforms.Compose: 前処理を順次適用するコンポーズオブジェクト。
+	"""
 
 	return transforms.Compose(
 		[
@@ -95,7 +131,12 @@ def build_transform(
 
 
 def instantiate_inception_v3() -> Tuple[nn.Module, Sequence[float], Sequence[float], str]:
-	"""Load an ImageNet pretrained Inception v3 backbone for feature extraction."""
+	"""特徴抽出用にImageNet学習済みInception v3を初期化する。
+
+	Returns:
+		Tuple[nn.Module, Sequence[float], Sequence[float], str]:
+			モデル本体、正規化平均、正規化標準偏差、学習済み重みの出典。
+	"""
 
 	weights = Inception_V3_Weights.IMAGENET1K_V1
 	model = inception_v3(weights=weights, transform_input=False)
@@ -117,13 +158,25 @@ def compute_feature_stats(
 	store: bool,
 	desc: str,
 ) -> FeatureStats:
-	"""Extract features for every image and compute mean/covariance statistics."""
+	"""全画像の特徴を抽出し平均および共分散を計算する。
+
+	Args:
+		model (nn.Module): 特徴抽出に用いるモデル。
+		dataloader (DataLoader): 画像のテンソルを供給するデータローダ。
+		device (torch.device): 推論に使用するデバイス。
+		store (bool): KID計算用に特徴を保持するかどうか。
+		desc (str): 進捗バーに表示する説明テキスト。
+
+	Returns:
+		FeatureStats: 計算済みの特徴統計量。
+	"""
 
 	features_list: List[np.ndarray] = []
 	with torch.no_grad():
 		for batch in tqdm(dataloader, desc=desc, unit="batch"):
 			batch = batch.to(device, non_blocking=True)
 			feats = model(batch)
+			# 特徴マップとして出力された場合は空間平均でベクトルに変換する。
 			if feats.ndim == 4:
 				feats = nn.functional.adaptive_avg_pool2d(feats, (1, 1))
 				feats = torch.flatten(feats, 1)
@@ -142,11 +195,22 @@ def compute_fid(
 	mu2: np.ndarray,
 	sigma2: np.ndarray,
 ) -> float:
-	"""Compute Fréchet Inception Distance between two multivariate Gaussians."""
+	"""2つの多変量ガウス分布間でFréchet距離を算出する。
+
+	Args:
+		mu1 (np.ndarray): 実データの平均ベクトル。
+		sigma1 (np.ndarray): 実データの共分散行列。
+		mu2 (np.ndarray): 生成データの平均ベクトル。
+		sigma2 (np.ndarray): 生成データの共分散行列。
+
+	Returns:
+		float: FIDスコア。
+	"""
 
 	diff = mu1 - mu2
 	covmean, _ = linalg.sqrtm(sigma1 @ sigma2, disp=False)
 	if not np.isfinite(covmean).all():
+		# 数値的不安定性が発生した場合はバイアスを足して安定化する。
 		offset = np.eye(sigma1.shape[0]) * 1e-6
 		covmean = linalg.sqrtm((sigma1 + offset) @ (sigma2 + offset))
 	covmean = np.real_if_close(covmean)
@@ -155,7 +219,16 @@ def compute_fid(
 
 
 def polynomial_kernel(x: np.ndarray, y: np.ndarray, degree: int = 3) -> np.ndarray:
-	"""Evaluate a third-degree polynomial kernel for KID computation."""
+	"""KID計算に用いる3次多項式カーネルを評価する。
+
+	Args:
+		x (np.ndarray): サンプル行列A。
+		y (np.ndarray): サンプル行列B。
+		degree (int): 多項式カーネルの次数。
+
+	Returns:
+		np.ndarray: カーネル値の行列。
+	"""
 
 	gamma = 1.0 / x.shape[1]
 	return (gamma * x @ y.T + 1.0) ** degree
@@ -168,7 +241,21 @@ def multi_subset_kid(
 	n_subsets: int,
 	seed: int,
 ) -> Tuple[float, float]:
-	"""Compute KID mean and standard error across repeated subsets."""
+	"""サブセットを繰り返し抽出してKIDの平均と標準誤差を求める。
+
+	Args:
+		real (np.ndarray): 実データの特徴行列。
+		fake (np.ndarray): 生成データの特徴行列。
+		subset_size (int): 1回の推定で使用するサンプル数。
+		n_subsets (int): 推定を繰り返すサブセット数。
+		seed (int): サンプリングの乱数シード。
+
+	Returns:
+		Tuple[float, float]: KID平均値と標準誤差。
+
+	Raises:
+		RuntimeError: 十分なサンプルが確保できない場合。
+	"""
 
 	if real.shape[0] < subset_size or fake.shape[0] < subset_size:
 		subset_size = min(real.shape[0], fake.shape[0])
@@ -204,7 +291,11 @@ def multi_subset_kid(
 
 
 def parse_args() -> argparse.Namespace:
-	"""Parse CLI arguments to configure the measurement."""
+	"""測定の実行に必要なコマンドライン引数を解析する。
+
+	Returns:
+		argparse.Namespace: パース済み引数を格納した名前空間。
+	"""
 
 	parser = argparse.ArgumentParser(
 		description=(
@@ -277,7 +368,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-	"""Entrypoint for CLI usage."""
+	"""コマンドライン実行時のエントリーポイント。"""
 
 	args = parse_args()
 	device = torch.device(args.device)
