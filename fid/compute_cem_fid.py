@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 import numpy as np
 import torch
@@ -269,6 +270,17 @@ def load_checkpoint(
     return checkpoint
 
 
+def find_cached_weights(url: str, repo_root: Path) -> Optional[Path]:
+    """既存の重みファイルがローカルに存在する場合はそのパスを返す."""
+
+    parsed = urlparse(url)
+    filename = Path(parsed.path).name
+    if not filename:
+        return None
+    candidate = repo_root / "fid" / "weights" / filename
+    return candidate if candidate.is_file() else None
+
+
 def extract_mocov2_backbone(
     state_dict: Dict[str, torch.Tensor]
 ) -> Dict[str, torch.Tensor]:
@@ -403,6 +415,11 @@ def instantiate_backbone(
     """
 
     conf = MODEL_CONFIGS[variant]
+    if weights_path is None:
+        cached_path = find_cached_weights(conf["url"], repo_root)
+        if cached_path is not None:
+            weights_path = cached_path
+
     checkpoint = load_checkpoint(
         url=conf["url"],
         download_dir=download_dir,
